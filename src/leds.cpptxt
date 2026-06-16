@@ -1,0 +1,152 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
+// ── Configuration réseau ─────────────────────────────────────────────────────
+const char* SSID      = "VROOM-API";
+const char* PASSWORD  = "12345678";
+const char* SERVER_IP = "192.168.4.1";   // IP par défaut du SoftAP de l'ESP32 boîtier
+const int   SERVER_PORT = 8888;
+const int   LOCAL_PORT  = 12345;
+
+// ── LED RGB (LED adressable WS2812 ou LED RGB simple câblée sur ces pins) ────
+// Adapter les pins selon ton câblage
+#define LED_R_PIN  25
+#define LED_G_PIN  26
+#define LED_B_PIN  27
+
+// ── Seuils RPM → couleur ─────────────────────────────────────────────────────
+//  0    – 1000  : éteint  (0, 0, 0)
+//  1000 – 2500  : vert    (0, 255, 0)
+//  2500 – 4000  : cyan    (0, 255, 255)
+//  4000 – 5500  : jaune   (255, 255, 0)
+//  5500 – 7000  : orange  (255, 100, 0)
+//  7000+        : rouge   (255, 0, 0)  — zone rouge / limiteur
+
+struct RpmZone {
+    int    threshold;
+    uint8_t r, g, b;
+};
+
+const RpmZone RPM_ZONES[] = {
+    { 1000, 0,   0,   0   },   // éteint
+    { 2500, 0,   255, 0   },   // vert
+    { 4000, 0,   255, 255 },   // cyan
+    { 5500, 255, 255, 0   },   // jaune
+    { 7000, 255, 100, 0   },   // orange
+    { INT_MAX, 255, 0, 0  },   // rouge (limiteur)
+};
+const int ZONE_COUNT = sizeof(RPM_ZONES) / sizeof(RPM_ZONES[0]);
+
+// ── Timing ───────────────────────────────────────────────────────────────────
+const unsigned long POLL_INTERVAL_MS = 100;   // interrogation toutes les 100 ms
+
+// ── Objets globaux ───────────────────────────────────────────────────────────
+WiFiUDP udp;
+
+// ────────────────────────────────────────────────────────────────────────────
+// Applique une couleur RGB sur les 3 canaux PWM
+// ────────────────────────────────────────────────────────────────────────────
+void setRGB(uint8_t r, uint8_t g, uint8_t b) {
+    analogWrite(LED_R_PIN, r);
+    analogWrite(LED_G_PIN, g);
+    analogWrite(LED_B_PIN, b);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Détermine la couleur correspondant à un régime moteur
+// ────────────────────────────────────────────────────────────────────────────
+void applyRpmColor(int rpm) {
+    for (int i = 0; i < ZONE_COUNT; i++) {
+        if (rpm < RPM_ZONES[i].threshold) {
+            setRGB(RPM_ZONES[i].r, RPM_ZONES[i].g, RPM_ZONES[i].b);
+            return;
+        }
+    }
+    // Sécurité : rouge si valeur hors table
+    setRGB(255, 0, 0);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Envoie "GET_RPM" au boîtier et retourne le RPM reçu, ou -1 en cas d'erreur
+// ────────────────────────────────────────────────────────────────────────────
+int fetchRPM() {
+    const char* cmd = "GET_RPM";
+    udp.beginPacket(SERVER_IP, SERVER_PORT);
+    udp.write((uint8_t*)cmd, strlen(cmd));
+    udp.endPacket();
+
+    // Attente de la réponse (timeout 200 ms)
+    unsigned long start = millis();
+    while (millis() - start < 200) {
+        int packetSize = udp.parsePacket();
+        if (packetSize > 0) {
+            char buf[32] = {0};
+            int len = udp.read((uint8_t*)buf, sizeof(buf) - 1);
+            buf[len] = '\0';
+
+            if (strncmp(buf, "ERROR", 5) == 0) return -1;
+
+            return atoi(buf);
+        }
+        delay(5);
+    }
+    return -1;   // timeout
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// setup
+// ────────────────────────────────────────────────────────────────────────────
+void setup() {
+    Serial.begin(115200);
+
+    // Init des pins LED
+    pinMode(LED_R_PIN, OUTPUT);
+    pinMode(LED_G_PIN, OUTPUT);
+    pinMode(LED_B_PIN, OUTPUT);
+    setRGB(0, 0, 0);
+
+    // Connexion Wi-Fi
+    Serial.printf("Connexion au Wi-Fi '%s'...\n", SSID);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(SSID, PASSWORD);
+
+    // Clignotement bleu pendant la connexion
+    bool ledState = false;
+    while (WiFi.status() != WL_CONNECTED) {
+        setRGB(0, 0, ledState ? 80 : 0);
+        ledState = !ledState;
+        delay(300);
+        Serial.print(".");
+    }
+    setRGB(0, 0, 0);
+
+    Serial.printf("\nConnecté ! IP locale : %s\n", WiFi.localIP().toString().c_str());
+
+    udp.begin(LOCAL_PORT);
+    Serial.printf("UDP démarré sur le port local %d\n", LOCAL_PORT);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// loop
+// ────────────────────────────────────────────────────────────────────────────
+void loop() {
+    static unsigned long lastPoll = 0;
+
+    if (millis() - lastPoll >= POLL_INTERVAL_MS) {
+        lastPoll = millis();
+
+        int rpm = fetchRPM();
+
+        if (rpm >= 0) {
+            Serial.printf("RPM : %d\n", rpm);
+            applyRpmColor(rpm);
+        } else {
+            // Erreur de communication : LED blanche clignotante
+            Serial.println("Erreur : pas de réponse du boîtier");
+            setRGB(50, 50, 50);
+            delay(50);
+            setRGB(0, 0, 0);
+        }
+    }
+}
