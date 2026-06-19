@@ -82,11 +82,13 @@ int getTurnSignal() {
     uint32_t turn = readCAN(0x361, Bytes, 1);
     if(turn == 1)return 0;
 
-    if(turn > 63 && turn < 67) return 1;
-    if(turn > 127 && turn < 131) return 2;
+    else if(turn > 63 && turn < 67) return 1;
+    else if(turn > 127 && turn < 131) return 2;
 
-    if(turn > 31 && turn < 35) return -1;
-    if(turn > 95 && turn < 99) return -2;
+    else if(turn > 31 && turn < 35) return -1;
+    else if(turn > 95 && turn < 99) return -2;
+    else return 0;
+    
 }
 
 int getLightsCall() {
@@ -121,10 +123,11 @@ int getWindShield(){
 
     if(var == 0)return 0;
 
-    if(var > 158 && var < 162) return 1;
-    if(var > 174 && var < 178) return 2;
+    else if(var > 158 && var < 162) return 1;
+    else if(var > 174 && var < 178) return 2;
 
-    if(var > 2006 && var < 210) return 3;
+    else if(var > 2006 && var < 210) return 3;
+    else return 0;
     
   
 }
@@ -223,8 +226,8 @@ void loop() {
     }
     else if (strcmp(incoming, "GET_TURN_SIGNAL") == 0) {
         int turn = getTurnSignal();
-        if (turn >= 0) snprintf(resp, sizeof(resp), "%d\n", turn);
-        else          snprintf(resp, sizeof(resp), "ERROR\n");
+        snprintf(resp, sizeof(resp), "%d\n", turn);
+        
     }
     else if (strcmp(incoming, "GET_LIGHTS_CALL") == 0) {
         int var = getLightsCall();
